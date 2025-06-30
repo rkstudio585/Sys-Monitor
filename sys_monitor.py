@@ -4,7 +4,20 @@ import psutil
 import time
 import os
 import sys
+import subprocess
+import json
 from datetime import datetime
+
+def get_termux_battery_status():
+    try:
+        result = subprocess.run(['termux-battery-status'], capture_output=True, text=True, check=True)
+        data = json.loads(result.stdout)
+        percent = data.get('percentage')
+        status = data.get('status')
+        plugged = data.get('plugged') == 'PLUGGED_AC' or data.get('plugged') == 'PLUGGED_USB'
+        return {'percent': percent, 'status': status, 'power_plugged': plugged}
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError):
+        return None
 
 def get_color(percent):
     if percent < 50:
@@ -58,50 +71,74 @@ def main_curses(stdscr):
         stdscr.clear()
 
         # CPU
-        cpu_percent = psutil.cpu_percent(interval=None)
-        cpu_percents = psutil.cpu_percent(interval=None, percpu=True)
-        stdscr.addstr(0, 1, f"CPU [{get_bar(cpu_percent, 10)}] {cpu_percent}%", curses.color_pair(get_color(cpu_percent)))
-        for i, p in enumerate(cpu_percents):
-            stdscr.addstr(1 + i, 1, f"  Core {i} [{get_bar(p, 10)}] {p}%", curses.color_pair(get_color(p)))
+        cpu_percents = [] # Initialize to an empty list
+        try:
+            cpu_percent = psutil.cpu_percent(interval=None)
+            cpu_percents = psutil.cpu_percent(interval=None, percpu=True)
+            stdscr.addstr(0, 1, f"CPU [{get_bar(cpu_percent, 10)}] {cpu_percent}%", curses.color_pair(get_color(cpu_percent)))
+            for i, p in enumerate(cpu_percents):
+                stdscr.addstr(1 + i, 1, f"  Core {i} [{get_bar(p, 10)}] {p}%", curses.color_pair(get_color(p)))
+        except PermissionError:
+            stdscr.addstr(0, 1, "CPU [Permission Denied]")
 
         # RAM
         mem = psutil.virtual_memory()
         stdscr.addstr(len(cpu_percents) + 2, 1, f"RAM [{get_bar(mem.percent, 10)}] {mem.percent}%", curses.color_pair(get_color(mem.percent)))
 
         # Storage
-        storage_root = psutil.disk_usage('/')
-        storage_sd = psutil.disk_usage('/storage/emulated/0')
-        stdscr.addstr(len(cpu_percents) + 4, 1, "Storage:")
-        stdscr.addstr(len(cpu_percents) + 5, 1, f"  /     [{get_bar(storage_root.percent, 10)}] {storage_root.percent}%", curses.color_pair(get_color(storage_root.percent)))
-        if storage_root.percent > 90:
-            stdscr.addstr(len(cpu_percents) + 5, 30, "Storage Warning!", curses.A_BOLD | curses.color_pair(3))
-        stdscr.addstr(len(cpu_percents) + 6, 1, f"  /sdcard [{get_bar(storage_sd.percent, 10)}] {storage_sd.percent}%", curses.color_pair(get_color(storage_sd.percent)))
-        if storage_sd.percent > 90:
-            stdscr.addstr(len(cpu_percents) + 6, 30, "Storage Warning!", curses.A_BOLD | curses.color_pair(3))
+        try:
+            storage_root = psutil.disk_usage('/')
+            stdscr.addstr(len(cpu_percents) + 4, 1, "Storage:")
+            stdscr.addstr(len(cpu_percents) + 5, 1, f"  /     [{get_bar(storage_root.percent, 10)}] {storage_root.percent}%", curses.color_pair(get_color(storage_root.percent)))
+            if storage_root.percent > 90:
+                stdscr.addstr(len(cpu_percents) + 5, 30, "Storage Warning!", curses.A_BOLD | curses.color_pair(3))
+        except PermissionError:
+            stdscr.addstr(len(cpu_percents) + 4, 1, "Storage: Permission Denied for /")
+        try:
+            storage_sd = psutil.disk_usage('/storage/emulated/0')
+            stdscr.addstr(len(cpu_percents) + 6, 1, f"  /sdcard [{get_bar(storage_sd.percent, 10)}] {storage_sd.percent}%", curses.color_pair(get_color(storage_sd.percent)))
+            if storage_sd.percent > 90:
+                stdscr.addstr(len(cpu_percents) + 6, 30, "Storage Warning!", curses.A_BOLD | curses.color_pair(3))
+        except PermissionError:
+            stdscr.addstr(len(cpu_percents) + 6, 1, "Storage: Permission Denied for /sdcard")
 
 
         # Battery
-        try:
-            battery = psutil.sensors_battery()
-            if battery:
-                charge_char = "▲" if battery.power_plugged else "▼"
-                health_char = "♥" # Simplified
-                bat_percent = battery.percent
-                if bat_percent < 15:
-                    stdscr.addstr(len(cpu_percents) + 8, 1, f"BAT [{get_bar(bat_percent, 10)}] {bat_percent}% {charge_char} {health_char}", curses.A_BOLD | curses.color_pair(3))
-                    stdscr.addstr(len(cpu_percents) + 8, 30, "Low Battery!", curses.A_BOLD | curses.color_pair(3))
-                else:
-                    stdscr.addstr(len(cpu_percents) + 8, 1, f"BAT [{get_bar(bat_percent, 10)}] {bat_percent}% {charge_char} {health_char}", curses.color_pair(get_color(bat_percent)))
+        battery_info = get_termux_battery_status()
+        if battery_info:
+            bat_percent = battery_info['percent']
+            charge_char = "▲" if battery_info['power_plugged'] else "▼"
+            health_char = "♥" # Simplified
+            if bat_percent < 15:
+                stdscr.addstr(len(cpu_percents) + 8, 1, f"BAT [{get_bar(bat_percent, 10)}] {bat_percent}% {charge_char} {health_char}", curses.A_BOLD | curses.color_pair(3))
+                stdscr.addstr(len(cpu_percents) + 8, 30, "Low Battery!", curses.A_BOLD | curses.color_pair(3))
+            else:
+                stdscr.addstr(len(cpu_percents) + 8, 1, f"BAT [{get_bar(bat_percent, 10)}] {bat_percent}% {charge_char} {health_char}", curses.color_pair(get_color(bat_percent)))
+        else:
+            try:
+                battery = psutil.sensors_battery()
+                if battery:
+                    charge_char = "▲" if battery.power_plugged else "▼"
+                    health_char = "♥" # Simplified
+                    bat_percent = battery.percent
+                    if bat_percent < 15:
+                        stdscr.addstr(len(cpu_percents) + 8, 1, f"BAT [{get_bar(bat_percent, 10)}] {bat_percent}% {charge_char} {health_char}", curses.A_BOLD | curses.color_pair(3))
+                        stdscr.addstr(len(cpu_percents) + 8, 30, "Low Battery!", curses.A_BOLD | curses.color_pair(3))
+                    else:
+                        stdscr.addstr(len(cpu_percents) + 8, 1, f"BAT [{get_bar(bat_percent, 10)}] {bat_percent}% {charge_char} {health_char}", curses.color_pair(get_color(bat_percent)))
 
-        except (AttributeError, FileNotFoundError):
-             stdscr.addstr(len(cpu_percents) + 8, 1, "BAT [No battery sensor found]")
+            except (AttributeError, FileNotFoundError, PermissionError):
+                 stdscr.addstr(len(cpu_percents) + 8, 1, "BAT [No battery sensor found or Permission Denied]")
 
 
         # Processes
         stdscr.addstr(len(cpu_percents) + 10, 1, f"Processes (sort: {sort_by.upper()})")
-        processes = get_processes(sort_by)
-        for i, p in enumerate(processes):
-            stdscr.addstr(len(cpu_percents) + 11 + i, 1, f"  {p['name']:<15} {p['cpu_percent'] if sort_by == 'cpu' else p['memory_percent']:.1f}%")
+        try:
+            processes = get_processes(sort_by)
+            for i, p in enumerate(processes):
+                stdscr.addstr(len(cpu_percents) + 11 + i, 1, f"  {p['name']:<15} {p['cpu_percent'] if sort_by == 'cpu' else p['memory_percent']:.1f}%")
+        except PermissionError:
+            stdscr.addstr(len(cpu_percents) + 11, 1, "  Process information: Permission Denied")
 
 
         stdscr.refresh()
@@ -111,31 +148,47 @@ def main_text():
     while True:
         print("--- System Monitor (Text Mode) ---")
         # CPU
-        print(f"CPU Usage: {psutil.cpu_percent()}%")
+        try:
+            print(f"CPU Usage: {psutil.cpu_percent()}%")
+        except PermissionError:
+            print("CPU Usage: Permission Denied")
         # RAM
         mem = psutil.virtual_memory()
         print(f"RAM Usage: {mem.percent}%")
         # Storage
-        storage_root = psutil.disk_usage('/')
-        print(f"Root Storage: {storage_root.percent}%")
-        storage_sd = psutil.disk_usage('/storage/emulated/0')
-        print(f"SD Card Storage: {storage_sd.percent}%")
-        # Battery
         try:
-            battery = psutil.sensors_battery()
-            if battery:
-                print(f"Battery: {battery.percent}%")
-        except (AttributeError, FileNotFoundError):
-            print("Battery: Not found")
+            storage_root = psutil.disk_usage('/')
+            print(f"Root Storage: {storage_root.percent}%")
+        except PermissionError:
+            print("Root Storage: Permission Denied")
+        try:
+            storage_sd = psutil.disk_usage('/storage/emulated/0')
+            print(f"SD Card Storage: {storage_sd.percent}%")
+        except PermissionError:
+            print("SD Card Storage: Permission Denied")
+        # Battery
+        battery_info = get_termux_battery_status()
+        if battery_info:
+            print(f"Battery: {battery_info['percent']}% (Termux)")
+        else:
+            try:
+                battery = psutil.sensors_battery()
+                if battery:
+                    print(f"Battery: {battery.percent}% (psutil)")
+            except (AttributeError, FileNotFoundError, PermissionError):
+                print("Battery: Not found or Permission Denied")
 
-        print("
---- Top 5 Processes (CPU) ---")
-        processes = get_processes('cpu')
-        for p in processes:
-            print(f"  {p['name']:<15} {p['cpu_percent']:.1f}%")
+        print("")
+        print("--- Top 5 Processes (CPU) ---")
+        try:
+            processes = get_processes('cpu')
+            for p in processes:
+                print(f"  {p['name']:<15} {p['cpu_percent']:.1f}%")
+        except PermissionError:
+            print("  Process information: Permission Denied")
 
         time.sleep(2)
-        print("\n" * 5)
+        
 
 
 if __name__ == "__main__":
